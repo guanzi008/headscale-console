@@ -82,7 +82,7 @@ OUTPUT=dist/headscale-console \
 生成发布文件（要求工作区干净，并会重新构建 Headplane）：
 
 ```bash
-./scripts/release.sh 0.1.1
+./scripts/release.sh 0.1.2
 ```
 
 ## 发布包与安装
