@@ -1,0 +1,62 @@
+{{define "account"}}{{template "header" .}}
+<h1>{{.T "account.title"}}</h1>
+<p class="muted small">{{.User.Email}}</p>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+<div class="identity">
+  <div><strong>{{.User.DisplayName}}</strong><div class="muted small">{{.T "account.local_account"}} · <code>{{.User.ID}}</code></div></div>
+  <form method="post" action="/idp/logout">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button type="submit">{{.T "account.logout"}}</button>
+  </form>
+</div>
+
+<div class="section">
+  <h2>{{.T "account.third_party"}}</h2>
+  {{if .Providers}}
+  <div class="stack">
+    {{range .Providers}}
+    <div class="identity">
+      <div>
+        <strong>{{providerName .Name}}</strong>
+        <div class="muted small">{{if .Linked}}{{$.T "account.linked"}}{{if .LinkedEmail}} · {{.LinkedEmail}}{{end}}{{else}}{{$.T "account.unlinked"}}{{end}}</div>
+      </div>
+      {{if .Linked}}
+      <form method="post" action="/idp/account/unlink">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="provider" value="{{.Name}}">
+        <button class="danger" type="submit">{{$.T "account.unlink"}}</button>
+      </form>
+      {{else}}
+      <form method="post" action="/idp/account/link">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="provider" value="{{.Name}}">
+        <button type="submit">{{$.T "account.link"}}</button>
+      </form>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="muted small">{{.T "account.no_providers"}}</p>
+  {{end}}
+</div>
+
+<div class="section">
+  <h2>{{.T "account.change_password"}}</h2>
+  <form method="post" action="/idp/account/password">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="current_password">{{.T "account.current_password"}}</label>
+    <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+    <label for="new_password">{{.T "account.new_password"}}</label>
+    <input id="new_password" name="new_password" type="password" autocomplete="new-password" required>
+    <label for="new_password_confirm">{{.T "account.confirm_new"}}</label>
+    <input id="new_password_confirm" name="new_password_confirm" type="password" autocomplete="new-password" required>
+    <div style="height:14px"></div>
+    <button type="submit">{{.T "account.update_password"}}</button>
+  </form>
+</div>
+<div class="section">
+  <a class="button" href="{{.AdminPath}}/">{{.T "account.enter_headplane"}}</a>
+</div>
+{{template "footer" .}}{{end}}

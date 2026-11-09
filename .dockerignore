@@ -1,0 +1,8 @@
+.git
+.cache
+dist/*
+!dist/headscale-console
+internal/assets/runtime
+tests
+*.out
+*.test

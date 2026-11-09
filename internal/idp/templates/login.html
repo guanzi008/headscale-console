@@ -1,0 +1,28 @@
+{{define "login"}}{{template "header" .}}
+<h1>{{.T "login.title"}}</h1>
+<p class="muted small">{{.T "login.description"}}</p>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/idp/login">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+  <label for="email">{{.T "common.email"}}</label>
+  <input id="email" name="email" type="email" autocomplete="username" value="{{.Email}}" required autofocus>
+  <label for="password">{{.T "common.password"}}</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <div style="height:14px"></div>
+  <button class="primary" type="submit">{{.T "login.submit"}}</button>
+</form>
+{{if .Providers}}
+<div class="divider">{{.T "login.or"}}</div>
+<div class="stack">
+  {{range .Providers}}
+  <a class="button" href="/idp/login/{{.Name}}?next={{$.ReturnTo | urlquery}}">{{$.T "login.external_with" (providerName .Name)}}</a>
+  {{end}}
+</div>
+{{end}}
+{{if .RegistrationEnabled}}
+<div class="section stack">
+  <a class="button" href="/idp/register?return_to={{.ReturnTo | urlquery}}">{{.T "login.create"}}</a>
+</div>
+{{end}}
+{{template "footer" .}}{{end}}

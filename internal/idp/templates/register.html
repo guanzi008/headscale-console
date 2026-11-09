@@ -1,0 +1,22 @@
+{{define "register"}}{{template "header" .}}
+<h1>{{.T "register.title"}}</h1>
+<p class="muted small">{{.T "register.description"}}</p>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/idp/register">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+  <label for="display_name">{{.T "register.display_name"}}</label>
+  <input id="display_name" name="display_name" value="{{.DisplayName}}" maxlength="80" required autofocus>
+  <label for="email">{{.T "common.email"}}</label>
+  <input id="email" name="email" type="email" autocomplete="username" value="{{.Email}}" required>
+  <label for="password">{{.T "common.password"}}</label>
+  <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+  <label for="password_confirm">{{.T "register.confirm_password"}}</label>
+  <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="8" required>
+  <div style="height:14px"></div>
+  <button class="primary" type="submit">{{.T "register.submit"}}</button>
+</form>
+<div class="section stack">
+  <a class="button" href="/idp/login?return_to={{.ReturnTo | urlquery}}">{{.T "register.existing"}}</a>
+</div>
+{{template "footer" .}}{{end}}

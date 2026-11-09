@@ -1,0 +1,51 @@
+# Headscale Console example configuration.
+# Copy to /etc/headscale-console/config.yaml and replace example values.
+
+server:
+  listen: 127.0.0.1:8080
+  base_url: https://hs.example.com
+  admin_path: /admin
+  internal:
+    idp: 127.0.0.1:18070
+    headplane: 127.0.0.1:18090
+    headscale_http: 127.0.0.1:18081
+    headscale_grpc: 127.0.0.1:18082
+    headscale_metrics: 127.0.0.1:18083
+
+registration:
+  enabled: true
+  allowed_email_domains:
+    - example.com
+  password_min_length: 12
+
+headplane:
+  default_role: member
+
+headscale:
+  base_domain: tailnet.example.com
+  derp_urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  dns_nameservers:
+    - 1.1.1.1
+    - 1.0.0.1
+
+# Third-party sign-in providers are optional. GitHub example:
+#
+# oauth_providers:
+#   - name: github
+#     type: github
+#     client_id: your-github-client-id
+#     client_secret: your-github-client-secret
+#
+# Generic OIDC example:
+#
+# oauth_providers:
+#   - name: pocket-id
+#     type: oidc
+#     issuer: https://id.example.com
+#     client_id: headscale-console
+#     client_secret: your-client-secret
+#     scopes:
+#       - openid
+#       - profile
+#       - email
