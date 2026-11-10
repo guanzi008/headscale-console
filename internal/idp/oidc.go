@@ -27,6 +27,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                issuer + "/authorize",
 		"token_endpoint":                        issuer + "/token",
 		"userinfo_endpoint":                     issuer + "/userinfo",
+		"end_session_endpoint":                  issuer + "/end-session",
 		"jwks_uri":                              issuer + "/jwks.json",
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query"},

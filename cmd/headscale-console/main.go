@@ -238,6 +238,7 @@ func (a *application) Run(ctx context.Context) error {
 		ClientID:        oidcClientID,
 		ClientSecret:    clientSecret,
 		DefaultRole:     a.cfg.Headplane.DefaultRole,
+		PostLogoutURI:   a.cfg.PublicURL(a.cfg.Server.AdminPath + "/login?s=logout"),
 	}); err != nil {
 		return err
 	}

@@ -10,7 +10,8 @@ NODE_IMAGE="${NODE_IMAGE:-node:24-slim}"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 GOARCH="${GOARCH:-amd64}"
-VERSION="${VERSION:-0.1.0}"
+DEFAULT_VERSION="$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || true)"
+VERSION="${VERSION:-${DEFAULT_VERSION:-dev}}"
 REBUILD_HEADPLANE=0
 OUTPUT="${OUTPUT:-$ROOT_DIR/dist/headscale-console}"
 
@@ -24,7 +25,7 @@ Environment:
   HEADPLANE_BUILD_DIR Existing Headplane build directory (default: <source>/build)
   NODE_IMAGE          Node 24 image used to extract the runtime (default: node:24-slim)
   GOARCH              linux target architecture (default: amd64)
-  VERSION             headscale-console version (default: 0.1.0)
+  VERSION             headscale-console version (default: git describe)
   OUTPUT              output path (default: dist/headscale-console)
 EOF
 }

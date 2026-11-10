@@ -176,6 +176,41 @@ ssl_certificate_key /etc/letsencrypt/live/hs.example.com/privkey.pem;
 
 自签名证书必须被服务器系统 CA 信任库信任，否则内置 Headscale 和 Headplane 在 OIDC discovery 阶段会失败。
 
+证书的 SAN 必须包含 Console 域名本身，而不是同服务器上的另一个域名。例如部署 `hs.odata.cc` 时，如果手头只有 `f.odata.cc` 的证书，应用会报：
+
+```text
+x509: certificate is valid for f.odata.cc, not hs.odata.cc
+```
+
+这种证书不能靠关闭校验解决。请为 `hs.odata.cc` 单独签发证书，并确认 `openssl` 输出中包含该名称：
+
+```bash
+openssl x509 -in /path/to/fullchain.pem -noout -subject -ext subjectAltName
+```
+
+### 实际域名示例：hs.odata.cc
+
+把本文其他位置的 `hs.example.com` 替换为 `hs.odata.cc` 后，关键配置应当一致：
+
+```text
+DNS A/AAAA:  hs.odata.cc -> Nginx 所在服务器
+证书路径:    /etc/letsencrypt/live/hs.odata.cc/fullchain.pem
+私钥路径:    /etc/letsencrypt/live/hs.odata.cc/privkey.pem
+base_url:    https://hs.odata.cc
+server_name: hs.odata.cc
+```
+
+```nginx
+server_name hs.odata.cc;
+ssl_certificate     /etc/letsencrypt/live/hs.odata.cc/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/hs.odata.cc/privkey.pem;
+```
+
+```yaml
+server:
+  base_url: https://hs.odata.cc
+```
+
 ## 6. Nginx 配置
 
 下面是一份完整示例。请替换：
@@ -316,6 +351,32 @@ curl -fsS https://hs.example.com/idp/.well-known/openid-configuration
 - Headplane：`https://hs.example.com/admin/`
 - Headscale 控制面：`https://hs.example.com/`
 
+对应的 OIDC discovery 必须由 Nginx 正常转发，而不是返回 404：
+
+```bash
+curl -fsS https://hs.example.com/idp/.well-known/openid-configuration
+```
+
+返回的 JSON 中应同时包含 `authorization_endpoint`、`token_endpoint`、
+`jwks_uri` 和 `end_session_endpoint`。Headplane 会用
+`end_session_endpoint` 完成 OIDC 退出，退出后的回调固定为：
+
+```text
+https://hs.example.com/admin/login?s=logout
+```
+
+如果服务器本机把域名解析到 `127.0.0.1`，但 Nginx 实际监听在其他地址，可以用
+`--resolve` 指定真实地址来测试：
+
+```bash
+curl -fsS --resolve hs.example.com:443:<Nginx-IP> \
+  https://hs.example.com/idp/.well-known/openid-configuration
+```
+
+Nginx 必须把 `/`、`/admin`、`/idp`、`/oidc`、WebSocket 和退出回调都转发到
+同一个 `headscale_console` upstream。不要只代理 `/admin`，否则 Tailscale
+控制面、OIDC discovery 和内置账号中心会返回 404 或无法登录。
+
 ## 9. 第三方登录回调地址
 
 如果配置了 GitHub OAuth 或通用 OIDC，提供方后台的回调地址必须使用同一个域名：
@@ -369,7 +430,7 @@ curl -v http://127.0.0.1:8080/health
 - 服务器本机无法解析 Console 域名。
 - NAT 回环不可用，或 `/etc/hosts` 没有正确配置。
 - Nginx 没有监听 443。
-- 证书缺少中间证书链，或系统不信任该 CA。
+- 证书缺少中间证书链、SAN 不包含当前域名，或系统不信任该 CA。
 - 防火墙阻止了服务器访问自己的公网地址。
 
 在服务器本机执行：
@@ -377,7 +438,34 @@ curl -v http://127.0.0.1:8080/health
 ```bash
 getent ahosts hs.example.com
 curl -v https://hs.example.com/idp/healthz
+curl -v https://hs.example.com/idp/.well-known/openid-configuration
 ```
+
+如果只看到 `404 Not Found` 且响应头带 `Server: nginx`，说明请求已经到 Nginx，
+但 Nginx 没有把 `/idp` 路径转发到应用。检查 `proxy_pass` 是否保留了原始路径。
+如果出现 `certificate is valid for f.odata.cc, not hs.odata.cc`，请重新签发包含
+`hs.odata.cc` 的证书，不要使用其他子域名的证书。
+
+### 退出登录无效或又自动登录
+
+应用生成的 Headplane 配置会启用 OIDC `end_session_endpoint`，并把退出回调设置为
+`https://<Console 域名>/admin/login?s=logout`。检查：
+
+1. Headscale 配置的 OIDC issuer 是 `https://hs.example.com/idp`，不是其他域名。
+2. 浏览器退出后确实请求了 `/idp/end-session`，并且最终回到 `?s=logout` 页面。
+3. Nginx 没有缓存 `/admin/login`、`/idp` 或 `/oidc` 的响应。
+4. 第三方 OIDC 提供方的 post-logout redirect URI 与本应用的退出回调一致。
+
+在已经包含 `proxy_pass http://headscale_console;` 的 location 中加入：
+
+```nginx
+proxy_no_cache 1;
+proxy_cache_bypass 1;
+```
+
+不要单独新建一个只有缓存指令、没有 `proxy_pass` 的 location，否则该路径会被
+Nginx 当作本地文件处理。本项目的完整 server 示例已经转发所有路径；通常不需要
+额外增加 location，只有在上游配置了缓存时才需要显式禁用上述路径的缓存。
 
 ### 登录后反复跳转或 Cookie 不生效
 

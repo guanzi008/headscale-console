@@ -192,6 +192,53 @@ func TestRegistrationAndOIDCFlow(t *testing.T) {
 	}
 }
 
+func TestOIDCEndSessionLogsOutLocalSession(t *testing.T) {
+	server, httpServer := newTestServer(t, nil)
+	defer httpServer.Close()
+	defer server.Close()
+
+	client := newTestClient(t, httpServer.URL)
+	registerTestUser(t, client, httpServer.URL, "logout@example.com")
+	getBody(t, client, httpServer.URL+"/idp/account", http.StatusOK)
+
+	discovery := getBody(t, client, httpServer.URL+"/idp/.well-known/openid-configuration", http.StatusOK)
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(discovery), &metadata); err != nil {
+		t.Fatalf("decode discovery: %v", err)
+	}
+	if metadata["end_session_endpoint"] != httpServer.URL+"/idp/end-session" {
+		t.Fatalf("end_session_endpoint = %v", metadata["end_session_endpoint"])
+	}
+
+	redirectURI := httpServer.URL + "/admin/login?s=logout"
+	response := getResponse(t, client, httpServer.URL+"/idp/end-session?client_id=wrong&post_logout_redirect_uri="+url.QueryEscape(redirectURI))
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wrong client status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	getBody(t, client, httpServer.URL+"/idp/account", http.StatusOK)
+
+	response = getResponse(t, client, httpServer.URL+"/idp/end-session?client_id=test-client&post_logout_redirect_uri="+url.QueryEscape("https://evil.example/"))
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wrong redirect status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	getBody(t, client, httpServer.URL+"/idp/account", http.StatusOK)
+
+	response = getResponse(t, client, httpServer.URL+"/idp/end-session?client_id=test-client&post_logout_redirect_uri="+url.QueryEscape(redirectURI))
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != redirectURI {
+		t.Fatalf("end-session status = %d location = %q", response.StatusCode, response.Header.Get("Location"))
+	}
+	_ = response.Body.Close()
+
+	response = getResponse(t, client, httpServer.URL+"/idp/account")
+	if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/idp/login") {
+		t.Fatalf("account after logout status = %d location = %q", response.StatusCode, response.Header.Get("Location"))
+	}
+	_ = response.Body.Close()
+	getBody(t, client, httpServer.URL+"/idp/login", http.StatusOK)
+}
+
 func TestExternalIdentityBindingAndLogin(t *testing.T) {
 	provider := &fakeProvider{
 		name:     "mock",

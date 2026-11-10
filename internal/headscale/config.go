@@ -32,6 +32,26 @@ type writtenConfig struct {
 	RecordsPath  string
 }
 
+// preservedSettings are the fields Headplane can edit through the Server
+// settings page. They live in the generated Headscale configuration, which
+// must keep them when the console rewrites its own managed fields at startup.
+type preservedSettings struct {
+	DisableCheckUpdates *bool `yaml:"disable_check_updates"`
+	Node                *struct {
+		Expiry any `yaml:"expiry"`
+	} `yaml:"node"`
+	Log *struct {
+		Level  any `yaml:"level"`
+		Format any `yaml:"format"`
+	} `yaml:"log"`
+	Taildrop *struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"taildrop"`
+	AutoUpdate *struct {
+		Enabled *bool `yaml:"enabled"`
+	} `yaml:"auto_update"`
+}
+
 func WriteConfig(path string, options Options) (writtenConfig, error) {
 	root := filepath.Join(options.DataDir, "headscale")
 	databasePath := filepath.Join(root, "db.sqlite")
@@ -46,6 +66,11 @@ func WriteConfig(path string, options Options) (writtenConfig, error) {
 		if err := os.WriteFile(recordsPath, []byte("[]\n"), 0o600); err != nil {
 			return writtenConfig{}, fmt.Errorf("create Headscale DNS records file: %w", err)
 		}
+	}
+
+	preserved, err := readPreservedSettings(path)
+	if err != nil {
+		return writtenConfig{}, err
 	}
 
 	cfg := map[string]any{
@@ -110,6 +135,7 @@ func WriteConfig(path string, options Options) (writtenConfig, error) {
 			},
 		},
 	}
+	applyPreservedSettings(cfg, preserved)
 
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -125,6 +151,51 @@ func WriteConfig(path string, options Options) (writtenConfig, error) {
 		NoiseKeyPath: noiseKey,
 		RecordsPath:  recordsPath,
 	}, nil
+}
+
+func readPreservedSettings(path string) (preservedSettings, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return preservedSettings{}, nil
+	}
+	if err != nil {
+		return preservedSettings{}, fmt.Errorf("read existing Headscale config: %w", err)
+	}
+
+	var settings preservedSettings
+	if err := yaml.Unmarshal(data, &settings); err != nil {
+		return preservedSettings{}, fmt.Errorf("decode existing Headscale config: %w", err)
+	}
+	return settings, nil
+}
+
+func applyPreservedSettings(cfg map[string]any, settings preservedSettings) {
+	if settings.DisableCheckUpdates != nil {
+		cfg["disable_check_updates"] = *settings.DisableCheckUpdates
+	}
+
+	node, _ := cfg["node"].(map[string]any)
+	if node != nil && settings.Node != nil && settings.Node.Expiry != nil {
+		node["expiry"] = settings.Node.Expiry
+	}
+
+	logging, _ := cfg["log"].(map[string]any)
+	if logging != nil && settings.Log != nil {
+		if settings.Log.Level != nil {
+			logging["level"] = settings.Log.Level
+		}
+		if settings.Log.Format != nil {
+			logging["format"] = settings.Log.Format
+		}
+	}
+
+	if settings.Taildrop != nil && settings.Taildrop.Enabled != nil {
+		cfg["taildrop"] = map[string]any{"enabled": *settings.Taildrop.Enabled}
+	}
+
+	if settings.AutoUpdate != nil && settings.AutoUpdate.Enabled != nil {
+		cfg["auto_update"] = map[string]any{"enabled": *settings.AutoUpdate.Enabled}
+	}
 }
 
 func EnsureInitialConfig(path string, options Options) (writtenConfig, error) {

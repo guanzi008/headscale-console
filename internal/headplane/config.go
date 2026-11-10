@@ -25,6 +25,7 @@ type Options struct {
 	ClientID        string
 	ClientSecret    string
 	DefaultRole     string
+	PostLogoutURI   string
 }
 
 func WriteConfig(path string, options Options) error {
@@ -41,6 +42,9 @@ func WriteConfig(path string, options Options) error {
 	}
 	if len(options.CookieSecret) != 32 {
 		return fmt.Errorf("Headplane cookie secret must be exactly 32 characters")
+	}
+	if options.PostLogoutURI == "" {
+		return fmt.Errorf("Headplane post-logout redirect URI is required")
 	}
 
 	dataDir := filepath.Join(options.DataDir, "headplane", "data")
@@ -65,13 +69,15 @@ func WriteConfig(path string, options Options) error {
 			"config_path": options.HeadscaleConfig,
 		},
 		"oidc": map[string]any{
-			"issuer":                options.Issuer,
-			"client_id":             options.ClientID,
-			"client_secret":         options.ClientSecret,
-			"default_role":          options.DefaultRole,
-			"disable_api_key_login": true,
-			"use_pkce":              true,
-			"scope":                 "openid email profile",
+			"issuer":                   options.Issuer,
+			"client_id":                options.ClientID,
+			"client_secret":            options.ClientSecret,
+			"default_role":             options.DefaultRole,
+			"disable_api_key_login":    true,
+			"post_logout_redirect_uri": options.PostLogoutURI,
+			"use_end_session":          true,
+			"use_pkce":                 true,
+			"scope":                    "openid email profile",
 		},
 	}
 	if runtime.GOOS == "linux" {

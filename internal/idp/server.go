@@ -172,6 +172,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /idp/register", s.handleRegisterPage)
 	mux.HandleFunc("POST /idp/register", s.handleRegister)
 	mux.HandleFunc("POST /idp/logout", s.handleLogout)
+	mux.HandleFunc("GET /idp/end-session", s.handleEndSession)
 	mux.HandleFunc("GET /idp/account", s.handleAccount)
 	mux.HandleFunc("POST /idp/account/password", s.handlePasswordChange)
 	mux.HandleFunc("POST /idp/account/link", s.handleStartLink)
@@ -373,6 +374,24 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearCookie(w, sessionCookie)
 	http.Redirect(w, r, "/idp/login", http.StatusSeeOther)
+}
+
+func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if subtle.ConstantTimeCompare([]byte(query.Get("client_id")), []byte(s.opts.ClientID)) != 1 {
+		http.Error(w, "unknown client", http.StatusBadRequest)
+		return
+	}
+	redirectURI := query.Get("post_logout_redirect_uri")
+	if redirectURI != s.opts.BaseURL+s.opts.AdminPath+"/login?s=logout" {
+		http.Error(w, "post_logout_redirect_uri is not registered", http.StatusBadRequest)
+		return
+	}
+	if cookie, err := r.Cookie(sessionCookie); err == nil && cookie.Value != "" {
+		_ = s.store.DeleteSession(r.Context(), hashToken(cookie.Value))
+	}
+	s.clearCookie(w, sessionCookie)
+	http.Redirect(w, r, redirectURI, http.StatusSeeOther)
 }
 
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {

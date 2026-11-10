@@ -82,7 +82,7 @@ OUTPUT=dist/headscale-console \
 生成发布文件（要求工作区干净，并会重新构建 Headplane）：
 
 ```bash
-./scripts/release.sh 0.1.2
+./scripts/release.sh 0.1.3
 ```
 
 ## 发布包与安装
@@ -104,6 +104,16 @@ sudo ./xuanyu-linux-amd64 install \
   -allowed-email-domains example.com \
   -no-start
 sudo ./xuanyu-linux-amd64 start
+```
+
+安装器在替换 `/opt/headscale-console/headscale-console` 后会再次执行该文件的
+`--version`，并比较源文件与已安装文件的 SHA-256。版本或内容不一致时安装会失败，
+避免 systemd 继续启动旧二进制。安装完成后可以再次确认：
+
+```bash
+/opt/headscale-console/headscale-console --version
+sudo systemctl restart headscale-console
+journalctl -u headscale-console -n 20 --no-pager
 ```
 
 Nginx 是独立组件，不由本项目和 `xuanyu` 安装或重载。复制 `deploy/nginx/headscale-console.conf`，按 [docs/nginx.md](docs/nginx.md) 替换域名、证书路径和上游地址，然后自行执行 `nginx -t` 与重载。

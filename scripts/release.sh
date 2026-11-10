@@ -31,6 +31,12 @@ mkdir -p "$PACKAGE_DIR/deploy/nginx" "$PACKAGE_DIR/docs"
 
 echo "==> Building headscale-console $VERSION"
 VERSION="$VERSION" ./build.sh --rebuild-headplane --output "$RELEASE_DIR/headscale-console-linux-amd64"
+CONSOLE_VERSION="$("$RELEASE_DIR/headscale-console-linux-amd64" --version)"
+[[ "$CONSOLE_VERSION" == "headscale-console $VERSION ("* ]] || {
+	echo "error: unexpected headscale-console version: $CONSOLE_VERSION" >&2
+	exit 1
+}
+echo "    $CONSOLE_VERSION"
 
 echo "==> Building xuanyu"
 (
@@ -47,6 +53,11 @@ XUANYU_VERSION="$("$RELEASE_DIR/xuanyu-linux-amd64" version)"
 
 echo "==> Packing release assets"
 install -m 0755 "$RELEASE_DIR/headscale-console-linux-amd64" "$PACKAGE_DIR/headscale-console"
+PACKAGE_VERSION="$("$PACKAGE_DIR/headscale-console" --version)"
+[[ "$PACKAGE_VERSION" == "$CONSOLE_VERSION" ]] || {
+	echo "error: packaged headscale-console differs from the built binary" >&2
+	exit 1
+}
 install -m 0644 "$ROOT_DIR/config.example.yaml" "$PACKAGE_DIR/config.example.yaml"
 install -m 0644 "$ROOT_DIR/deploy/nginx/headscale-console.conf" "$PACKAGE_DIR/deploy/nginx/headscale-console.conf"
 install -m 0644 "$ROOT_DIR/docs/nginx.md" "$PACKAGE_DIR/docs/nginx.md"
