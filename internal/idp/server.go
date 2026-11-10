@@ -736,6 +736,12 @@ func (s *Server) safeReturnTo(value string) string {
 	if !allowed {
 		return ""
 	}
+	// Old login forms and third-party sign-in links may still carry the
+	// provider's logout landing URL. Do not end the dashboard session again
+	// immediately after successfully authenticating the account.
+	if strings.TrimSuffix(parsed.Path, "/") == s.opts.AdminPath+"/login" && parsed.Query().Get("s") == "logout" {
+		return s.opts.AdminPath + "/"
+	}
 	return parsed.String()
 }
 

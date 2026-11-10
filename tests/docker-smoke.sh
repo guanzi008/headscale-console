@@ -339,6 +339,21 @@ curl -fsS -L -c "$ADMIN_JAR" -b "$ADMIN_JAR" -o "$WORK_DIR/admin-machines-en.htm
 assert_matches "$WORK_DIR/admin-machines-en.html" '<html[^>]*lang="en"'
 assert_contains "$WORK_DIR/admin-machines-en.html" "Machines"
 
+printf '==> Testing dashboard sign-out and sign-in with a stale logout return URL\n'
+LOGOUT_RESULT="$(curl -sS -L -c "$ADMIN_JAR" -b "$ADMIN_JAR" -H "Origin: $BASE_URL" \
+  --data '' -o "$WORK_DIR/dashboard-signed-out.html" -w '%{http_code}\n%{url_effective}' "$BASE_URL/admin/logout")"
+assert_equals "$(printf '%s\n' "$LOGOUT_RESULT" | sed -n '1p')" "200" "dashboard sign-out response"
+assert_equals "$(printf '%s\n' "$LOGOUT_RESULT" | sed -n '2p')" "$BASE_URL/idp/login?return_to=%2Fadmin%2F" "dashboard sign-out login destination"
+assert_contains "$WORK_DIR/dashboard-signed-out.html" 'name="return_to" value="/admin/"'
+RELOGIN_CSRF="$(csrf_token "$WORK_DIR/dashboard-signed-out.html")"
+RELOGIN_RESULT="$(curl -sS -L -c "$ADMIN_JAR" -b "$ADMIN_JAR" -H "Origin: $BASE_URL" \
+  --data-urlencode "csrf_token=$RELOGIN_CSRF" --data-urlencode 'email=test@example.com' \
+  --data-urlencode 'password=correct-horse-battery' --data-urlencode 'return_to=/admin/login?s=logout' \
+  -o "$WORK_DIR/dashboard-signed-in-again.html" -w '%{http_code}\n%{url_effective}' "$BASE_URL/idp/login")"
+assert_equals "$(printf '%s\n' "$RELOGIN_RESULT" | sed -n '1p')" "200" "dashboard sign-in after sign-out"
+assert_equals "$(printf '%s\n' "$RELOGIN_RESULT" | sed -n '2p')" "$BASE_URL/admin/machines" "sign-in must not return to the logout page"
+assert_contains "$WORK_DIR/dashboard-signed-in-again.html" "Access controls"
+
 printf '==> Testing a second user can register and sign in\n'
 SECOND_JAR="$WORK_DIR/second-user.cookies"
 curl -fsS -c "$SECOND_JAR" -b "$SECOND_JAR" -o "$WORK_DIR/second-register.html" "$BASE_URL/idp/register"

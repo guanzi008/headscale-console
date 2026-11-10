@@ -239,6 +239,41 @@ func TestOIDCEndSessionLogsOutLocalSession(t *testing.T) {
 	getBody(t, client, httpServer.URL+"/idp/login", http.StatusOK)
 }
 
+func TestSignInAfterLogoutDoesNotReturnToLogoutPage(t *testing.T) {
+	server, endpoint := newTestServer(t, nil)
+	defer endpoint.Close()
+	defer server.Close()
+	client := newTestClient(t, endpoint.URL)
+	registerTestUser(t, client, endpoint.URL, "relogin@example.com")
+	staleTarget := "/admin/login?s=logout"
+	response := getResponse(t, client, endpoint.URL+"/idp/end-session?client_id=test-client&post_logout_redirect_uri="+url.QueryEscape(endpoint.URL+staleTarget))
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("end session status: %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	page := getBody(t, client, endpoint.URL+"/idp/login?return_to="+url.QueryEscape(staleTarget), http.StatusOK)
+	// A form already open in the browser can still submit the old target.
+	response = postForm(t, client, endpoint.URL+"/idp/login", url.Values{
+		"csrf_token": {csrfToken(t, page)}, "email": {"relogin@example.com"},
+		"password": {"correct horse battery"}, "return_to": {staleTarget},
+	})
+	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/admin/" {
+		t.Fatalf("sign-in returned to logout page: status=%d location=%q", response.StatusCode, response.Header.Get("Location"))
+	}
+	_ = response.Body.Close()
+	for _, target := range []string{staleTarget, "/admin/machines?name=node050"} {
+		response := getResponse(t, client, endpoint.URL+"/idp/login?return_to="+url.QueryEscape(target))
+		expected := target
+		if target == staleTarget {
+			expected = "/admin/"
+		}
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != expected {
+			t.Fatalf("existing session redirect: status=%d location=%q want=%q", response.StatusCode, response.Header.Get("Location"), expected)
+		}
+		_ = response.Body.Close()
+	}
+}
+
 func TestExternalIdentityBindingAndLogin(t *testing.T) {
 	provider := &fakeProvider{
 		name:     "mock",

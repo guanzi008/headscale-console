@@ -111,6 +111,12 @@ func (a *application) guardPersonalHeadplane(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// The provider ends the account session before returning here. A new
+		// sign-in must resume at the dashboard rather than replay this marker.
+		if r.Method == http.MethodGet && strings.TrimSuffix(r.URL.Path, "/") == a.cfg.Server.AdminPath+"/login" && r.URL.Query().Get("s") == "logout" {
+			http.Redirect(w, r, "/idp/login?return_to="+url.QueryEscape(a.cfg.Server.AdminPath+"/"), http.StatusSeeOther)
+			return
+		}
 		user, ok := a.idpServer.CurrentUser(r)
 		if !ok {
 			returnTo := a.cfg.Server.AdminPath + "/"
