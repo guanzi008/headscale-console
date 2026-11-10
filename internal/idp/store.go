@@ -11,10 +11,13 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("conflict")
-	ErrConsumed = errors.New("already consumed")
-	ErrExpired  = errors.New("expired")
+	ErrNotFound   = errors.New("not found")
+	ErrConflict   = errors.New("conflict")
+	ErrConsumed   = errors.New("already consumed")
+	ErrExpired    = errors.New("expired")
+	ErrForbidden  = errors.New("administrator permission required")
+	ErrSelfDelete = errors.New("cannot delete the current administrator")
+	ErrLastAdmin  = errors.New("cannot delete the last administrator")
 )
 
 type User struct {
@@ -24,6 +27,8 @@ type User struct {
 	PasswordHash string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	IsAdmin      bool
+	Disabled     bool
 }
 
 type Identity struct {
@@ -81,6 +86,14 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize account database: %w", err)
 	}
+	// Existing installations keep their accounts. The first registered account
+	// becomes the platform administrator; subsequent accounts own their tailnets.
+	if _, err := db.Exec(`INSERT OR IGNORE INTO account_states (user_id, is_admin, disabled)
+		SELECT id, CASE WHEN id = (SELECT id FROM users ORDER BY created_at, rowid LIMIT 1)
+		THEN 1 ELSE 0 END, 0 FROM users`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize account roles: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -98,7 +111,12 @@ func (s *Store) CreateUser(ctx context.Context, email, displayName, passwordHash
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO users (id, email, display_name, password_hash, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Email, user.DisplayName, user.PasswordHash, user.CreatedAt.Unix(), user.UpdatedAt.Unix())
@@ -108,20 +126,31 @@ func (s *Store) CreateUser(ctx context.Context, email, displayName, passwordHash
 		}
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO account_states (user_id, is_admin, disabled)
+		SELECT ?, NOT EXISTS (SELECT 1 FROM account_states WHERE is_admin = 1), 0`, user.ID); err != nil {
+		return User{}, fmt.Errorf("create account role: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT is_admin FROM account_states WHERE user_id = ?", user.ID).Scan(&user.IsAdmin); err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
 	return user, nil
 }
 
+const userColumns = `u.id, u.email, u.display_name, u.password_hash, u.created_at, u.updated_at,
+	a.is_admin, a.disabled`
+
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, email, display_name, password_hash, created_at, updated_at
-		FROM users WHERE email = ? COLLATE NOCASE`, email)
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+`
+		FROM users u JOIN account_states a ON a.user_id = u.id WHERE u.email = ? COLLATE NOCASE`, email)
 	return scanUser(row)
 }
 
 func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, email, display_name, password_hash, created_at, updated_at
-		FROM users WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+`
+		FROM users u JOIN account_states a ON a.user_id = u.id WHERE u.id = ?`, id)
 	return scanUser(row)
 }
 
@@ -140,20 +169,22 @@ func (s *Store) SetPassword(ctx context.Context, userID, passwordHash string) er
 }
 
 func (s *Store) CreateSession(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
-		VALUES (?, ?, ?, ?)`, tokenHash, userID, expiresAt.Unix(), time.Now().UTC().Unix())
+		SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM account_states WHERE user_id = ? AND disabled = 0)`, tokenHash, userID, expiresAt.Unix(), time.Now().UTC().Unix(), userID)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
 	}
 	return nil
 }
 
 func (s *Store) UserBySession(ctx context.Context, tokenHash string, now time.Time) (User, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.email, u.display_name, u.password_hash, u.created_at, u.updated_at
-		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, now.UTC().Unix())
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+`
+		FROM sessions s JOIN users u ON u.id = s.user_id JOIN account_states a ON a.user_id = u.id
+		WHERE s.token_hash = ? AND s.expires_at > ? AND a.disabled = 0`, tokenHash, now.UTC().Unix())
 	return scanUser(row)
 }
 
@@ -298,21 +329,23 @@ func (s *Store) ConsumeAuthCode(ctx context.Context, codeHash string, now time.T
 }
 
 func (s *Store) CreateAccessToken(ctx context.Context, tokenHash, userID, scope string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO access_tokens (token_hash, user_id, scope, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		tokenHash, userID, scope, expiresAt.UTC().Unix(), time.Now().UTC().Unix())
+		SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM account_states WHERE user_id = ? AND disabled = 0)`,
+		tokenHash, userID, scope, expiresAt.UTC().Unix(), time.Now().UTC().Unix(), userID)
 	if err != nil {
 		return fmt.Errorf("create access token: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
 	}
 	return nil
 }
 
 func (s *Store) UserByAccessToken(ctx context.Context, tokenHash string, now time.Time) (User, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.email, u.display_name, u.password_hash, u.created_at, u.updated_at
-		FROM access_tokens a JOIN users u ON u.id = a.user_id
-		WHERE a.token_hash = ? AND a.expires_at > ?`, tokenHash, now.UTC().Unix())
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+`
+		FROM access_tokens t JOIN users u ON u.id = t.user_id JOIN account_states a ON a.user_id = u.id
+		WHERE t.token_hash = ? AND t.expires_at > ? AND a.disabled = 0`, tokenHash, now.UTC().Unix())
 	return scanUser(row)
 }
 
@@ -374,10 +407,10 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-func scanUser(row *sql.Row) (User, error) {
+func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var user User
 	var created, updated int64
-	if err := row.Scan(&user.ID, &user.Email, &user.DisplayName, &user.PasswordHash, &created, &updated); err != nil {
+	if err := row.Scan(&user.ID, &user.Email, &user.DisplayName, &user.PasswordHash, &created, &updated, &user.IsAdmin, &user.Disabled); err != nil {
 		return User{}, normalizeNotFound(err)
 	}
 	user.CreatedAt = time.Unix(created, 0).UTC()
@@ -423,6 +456,12 @@ CREATE TABLE IF NOT EXISTS identities (
 	created_at INTEGER NOT NULL,
 	PRIMARY KEY (provider, subject),
 	UNIQUE (user_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS account_states (
+	user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+	is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+	disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (

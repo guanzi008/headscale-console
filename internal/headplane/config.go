@@ -12,6 +12,7 @@ import (
 )
 
 type Options struct {
+	PersonalNetwork bool
 	Listen          string
 	PublicURL       string
 	AdminPath       string
@@ -84,6 +85,13 @@ func WriteConfig(path string, options Options) error {
 		cfg["integration"] = map[string]any{
 			"proc": map[string]any{"enabled": true},
 		}
+	}
+	if options.PersonalNetwork {
+		cfg["integration"] = map[string]any{"proc": map[string]any{
+			"enabled":            true,
+			"console_reload_url": options.HeadscaleURL + "/api/console/tailnet/reload",
+			"console_api_key":    options.APIKey,
+		}}
 	}
 
 	data, err := yaml.Marshal(cfg)

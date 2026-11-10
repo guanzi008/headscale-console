@@ -28,6 +28,8 @@ CONTAINER_NAME="headscale-console-smoke-$$"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/headscale-console-smoke.XXXXXX")"
 MOCKOIDC_PID=""
 CONTAINER_STARTED=0
+NODE_CONTAINERS=()
+TAILSCALE_IMAGE="${TAILSCALE_IMAGE:-tailscale/tailscale:v1.104.1}"
 
 fail() {
 	printf 'error: %s\n' "$*" >&2
@@ -92,6 +94,7 @@ cleanup() {
 		tail -n 100 "$WORK_DIR/mockoidc.log" >&2
 	fi
 	docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	for node in "${NODE_CONTAINERS[@]}"; do docker rm -f "$node" >/dev/null 2>&1 || true; done
 	if [[ -n "$MOCKOIDC_PID" ]]; then
 		kill "$MOCKOIDC_PID" >/dev/null 2>&1 || true
 		wait "$MOCKOIDC_PID" >/dev/null 2>&1 || true
@@ -356,9 +359,119 @@ SECOND_ADMIN_RESULT="$(curl -sS -L -c "$SECOND_JAR" -b "$SECOND_JAR" -o "$WORK_D
 SECOND_ADMIN_STATUS="$(printf '%s\n' "$SECOND_ADMIN_RESULT" | sed -n '1p')"
 SECOND_ADMIN_FINAL="$(printf '%s\n' "$SECOND_ADMIN_RESULT" | sed -n '2p')"
 assert_equals "$SECOND_ADMIN_STATUS" "200" "second user Headplane OIDC response"
-assert_equals "$SECOND_ADMIN_FINAL" "$BASE_URL/admin/" "second user Headplane landing page"
-assert_contains "$WORK_DIR/second-admin.html" "second@example.com"
-assert_contains "$WORK_DIR/second-admin.html" "Connect your devices"
+assert_equals "$SECOND_ADMIN_FINAL" "$BASE_URL/admin/machines" "second user's independent network"
+assert_contains "$WORK_DIR/second-admin.html" "Machines"
+assert_contains "$WORK_DIR/second-admin.html" "Access controls"
+
+printf '==> Testing independent networks with real Tailscale devices\n'
+FIRST_ID="$(grep -oE 'usr_[0-9a-f]{24}' "$WORK_DIR/registered-account.html" | head -n 1)"
+SECOND_ID="$(grep -oE 'usr_[0-9a-f]{24}' "$WORK_DIR/second-account.html" | head -n 1)"
+[[ -n "$FIRST_ID" && -n "$SECOND_ID" && "$FIRST_ID" != "$SECOND_ID" ]] || fail "account identities are not distinct"
+FIRST_KEY="$(docker exec "$CONTAINER_NAME" cat "/data/tailnets/$FIRST_ID/headscale/console-api-key")"
+SECOND_KEY="$(docker exec "$CONTAINER_NAME" cat "/data/tailnets/$SECOND_ID/headscale/console-api-key")"
+FIRST_USER="$(curl -fsS -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/v1/user" | jq -r '.users[0].id')"
+SECOND_USER="$(curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/user" | jq -r '.users[0].id')"
+[[ "$FIRST_USER" != "$SECOND_USER" ]] || fail "client account profile IDs collide on the shared control URL"
+FIRST_AUTH="$(curl -fsS -H "Authorization: Bearer $FIRST_KEY" -H 'Content-Type: application/json' \
+  --data "{\"user\":\"$FIRST_USER\",\"reusable\":true}" "$BASE_URL/api/v1/preauthkey" | jq -r '.preAuthKey.key')"
+SECOND_AUTH="$(curl -fsS -H "Authorization: Bearer $SECOND_KEY" -H 'Content-Type: application/json' \
+  --data "{\"user\":\"$SECOND_USER\",\"reusable\":true}" "$BASE_URL/api/v1/preauthkey" | jq -r '.preAuthKey.key')"
+start_node() {
+  local label="$1" key="$2" name="$CONTAINER_NAME-$1"
+  NODE_CONTAINERS+=("$name")
+  docker run -d --name "$name" --network host \
+    -e TS_USERSPACE=true -e TS_STATE_DIR=/tmp/tailscale \
+    -e "TS_AUTHKEY=$key" -e "TS_EXTRA_ARGS=--login-server=$BASE_URL --hostname=$label --accept-dns=false" \
+    -e 'TS_TAILSCALED_EXTRA_ARGS=--port=0' "$TAILSCALE_IMAGE" >/dev/null
+}
+start_node alice-private-one ""
+printf '==> Testing device authorization through the shared account login\n'
+AUTH_URL=""
+for ((i=0; i<120; i++)); do
+  AUTH_URL="$(docker logs "$CONTAINER_NAME-alice-private-one" 2>&1 | grep -oE "${BASE_URL}/register/[A-Za-z0-9_-]+" | head -n 1 || true)"
+  [[ -n "$AUTH_URL" ]] && break
+  sleep 0.5
+done
+[[ -n "$AUTH_URL" ]] || fail "interactive device did not request browser authorization"
+curl -fsS -c "$ADMIN_JAR" -b "$ADMIN_JAR" -o /dev/null "$BASE_URL/idp/language?lang=zh-CN&return_to=%2Fidp%2Faccount"
+CONFIRM_URL="$(curl -fsS -L -c "$ADMIN_JAR" -b "$ADMIN_JAR" -o "$WORK_DIR/device-confirm.html" -w '%{url_effective}' "$AUTH_URL")"
+assert_contains "$WORK_DIR/device-confirm.html" "确认设备注册"
+assert_contains "$WORK_DIR/device-confirm.html" 'lang="zh-CN"'
+DEVICE_CSRF="$(sed -n 's/.*name="headscale_register_confirm"[^>]*value="\([^"]*\)".*/\1/p' "$WORK_DIR/device-confirm.html" | head -n 1)"
+[[ -n "$DEVICE_CSRF" ]] || fail "device confirmation token not found"
+curl -fsS -c "$ADMIN_JAR" -b "$ADMIN_JAR" --data-urlencode "headscale_register_confirm=$DEVICE_CSRF" \
+  -o "$WORK_DIR/device-confirmed.html" "$CONFIRM_URL"
+curl -fsS -c "$ADMIN_JAR" -b "$ADMIN_JAR" -o /dev/null "$BASE_URL/idp/language?lang=en&return_to=%2Fidp%2Faccount"
+start_node alice-private-two "$FIRST_AUTH"
+start_node bob-private-one "$SECOND_AUTH"
+for ((i=0; i<120; i++)); do
+  curl -fsS -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/v1/node" > "$WORK_DIR/alice-nodes.json"
+  curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/node" > "$WORK_DIR/bob-nodes.json"
+  if jq -e '.nodes | length == 2' "$WORK_DIR/alice-nodes.json" >/dev/null && jq -e '.nodes | length == 1' "$WORK_DIR/bob-nodes.json" >/dev/null; then break; fi
+  sleep 0.5
+done
+jq -e '.nodes | length == 2' "$WORK_DIR/alice-nodes.json" >/dev/null || fail "Alice's devices did not join her network"
+jq -e '.nodes | length == 1' "$WORK_DIR/bob-nodes.json" >/dev/null || fail "Bob's device did not join his network"
+for ((i=0; i<60; i++)); do
+  docker exec "$CONTAINER_NAME-alice-private-one" tailscale status --json > "$WORK_DIR/alice-status.json"
+  docker exec "$CONTAINER_NAME-bob-private-one" tailscale status --json > "$WORK_DIR/bob-status.json"
+  if jq -e '[.Peer[]?.HostName] | index("alice-private-two") != null' "$WORK_DIR/alice-status.json" >/dev/null && \
+    jq -e '.BackendState == "Running" and (.CurrentTailnet.MagicDNSSuffix | type == "string")' "$WORK_DIR/bob-status.json" >/dev/null; then break; fi
+  sleep 0.5
+done
+jq -e '[.Peer[]?.HostName] | index("alice-private-two") != null and index("bob-private-one") == null' "$WORK_DIR/alice-status.json" >/dev/null || fail "Alice's peer map crosses network boundaries"
+jq -e '(.Peer // {}) | length == 0' "$WORK_DIR/bob-status.json" >/dev/null || fail "Bob can see Alice's devices"
+FIRST_DOMAIN="$(jq -r '.CurrentTailnet.MagicDNSSuffix' "$WORK_DIR/alice-status.json")"
+SECOND_DOMAIN="$(jq -r '.CurrentTailnet.MagicDNSSuffix' "$WORK_DIR/bob-status.json")"
+[[ "$FIRST_DOMAIN" != "$SECOND_DOMAIN" && "$FIRST_DOMAIN" != "null" && "$SECOND_DOMAIN" != "null" ]] || fail "MagicDNS domains are shared"
+
+printf '==> Testing restart recovery for both private networks\n'
+docker restart "$CONTAINER_NAME" >/dev/null
+for ((i=0; i<120; i++)); do
+  if curl -fsS -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/v1/node" > "$WORK_DIR/alice-restored.json" 2>/dev/null && \
+    curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/node" > "$WORK_DIR/bob-restored.json" 2>/dev/null && \
+    jq -e '.nodes | length == 2' "$WORK_DIR/alice-restored.json" >/dev/null && \
+    jq -e '.nodes | length == 1' "$WORK_DIR/bob-restored.json" >/dev/null; then break; fi
+  sleep 0.5
+done
+jq -e '.nodes | length == 2' "$WORK_DIR/alice-restored.json" >/dev/null || fail "restart lost Alice's devices"
+jq -e '.nodes | length == 1' "$WORK_DIR/bob-restored.json" >/dev/null || fail "restart lost Bob's devices"
+jq -S '[.nodes[] | {id, nodeKey, user: .user.id}] | sort_by(.id)' "$WORK_DIR/alice-nodes.json" > "$WORK_DIR/alice-identities-before.json"
+jq -S '[.nodes[] | {id, nodeKey, user: .user.id}] | sort_by(.id)' "$WORK_DIR/alice-restored.json" > "$WORK_DIR/alice-identities-after.json"
+cmp "$WORK_DIR/alice-identities-before.json" "$WORK_DIR/alice-identities-after.json" || fail "restart changed public node or user identities"
+curl -fsS -L -c "$SECOND_JAR" -b "$SECOND_JAR" -o "$WORK_DIR/bob-console-restored.html" "$BASE_URL/admin/machines"
+assert_contains "$WORK_DIR/bob-console-restored.html" "bob-private-one"
+
+printf '==> Testing forged network headers and independent policies\n'
+curl -fsS -L -b "$ADMIN_JAR" -H "X-HSC-Tailnet: $SECOND_ID" -H 'X-HSC-Proxy-Secret: forged' \
+  -o "$WORK_DIR/forged-network.html" "$BASE_URL/admin/machines"
+assert_contains "$WORK_DIR/forged-network.html" "alice-private-one"
+if grep -Fq 'bob-private-one' "$WORK_DIR/forged-network.html"; then fail "browser headers can select another account's network"; fi
+printf '==> Testing that a network reload preserves the other network\n'
+curl -fsS -X POST -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/console/tailnet/reload" >/dev/null
+curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/node" | jq -e '.nodes | length == 1' >/dev/null || fail "reloading Alice disrupted Bob"
+curl -fsS -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/v1/node" | jq -e '.nodes | length == 2' >/dev/null || fail "reloading Alice lost her devices"
+curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/policy" > "$WORK_DIR/bob-policy-before.json"
+curl -fsS -X PUT -H "Authorization: Bearer $FIRST_KEY" -H 'Content-Type: application/json' \
+  --data '{"policy":"{\"acls\":[]}"}' "$BASE_URL/api/v1/policy" >/dev/null
+curl -fsS -H "Authorization: Bearer $SECOND_KEY" "$BASE_URL/api/v1/policy" > "$WORK_DIR/bob-policy-after.json"
+cmp "$WORK_DIR/bob-policy-before.json" "$WORK_DIR/bob-policy-after.json" || fail "one network changed another network's policy"
+
+printf '==> Testing administrator account deletion and access revocation\n'
+assert_equals "$(curl -sS -b "$SECOND_JAR" -o /dev/null -w '%{http_code}' "$BASE_URL/idp/users")" "403" "personal owner is not a platform administrator"
+curl -fsS -b "$ADMIN_JAR" -o "$WORK_DIR/account-management.html" "$BASE_URL/idp/users?lang=zh-CN"
+assert_contains "$WORK_DIR/account-management.html" "删除账号"
+curl -fsS -c "$ADMIN_JAR" -b "$ADMIN_JAR" -o "$WORK_DIR/delete-confirm.html" "$BASE_URL/idp/users/$SECOND_ID/delete"
+DELETE_CSRF="$(csrf_token "$WORK_DIR/delete-confirm.html")"
+assert_equals "$(curl -sS -b "$ADMIN_JAR" -o /dev/null -w '%{http_code}' \
+  --data-urlencode "csrf_token=$DELETE_CSRF" --data-urlencode 'confirm_email=second@example.com' \
+  "$BASE_URL/idp/users/$SECOND_ID/delete")" "303" "delete registered account and network"
+assert_equals "$(curl -sS -b "$SECOND_JAR" -o /dev/null -w '%{http_code}' "$BASE_URL/admin/machines")" "303" "deleted account's old Headplane cookie is rejected"
+REVOKED_STATUS="$(curl -sS -H "Authorization: Bearer $SECOND_KEY" -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/node")"
+[[ "$REVOKED_STATUS" == 401 || "$REVOKED_STATUS" == 403 ]] || fail "deleted network API key still works: $REVOKED_STATUS"
+docker exec "$CONTAINER_NAME" test ! -e "/data/tailnets/$SECOND_ID/headscale/db.sqlite" || fail "deleted network database remains"
+docker exec "$CONTAINER_NAME" test ! -e "/data/tailnets/$SECOND_ID/headplane/data/hp_persist.db" || fail "deleted network sessions remain"
+curl -fsS -H "Authorization: Bearer $FIRST_KEY" "$BASE_URL/api/v1/node" | jq -e '.nodes | length == 2' >/dev/null || fail "deleting Bob changed Alice's devices"
 
 printf '\nDocker smoke test passed.\n'
 printf '  Headscale: %s\n' "$BASE_URL"

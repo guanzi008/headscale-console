@@ -1,0 +1,29 @@
+{{define "users"}}{{template "header" .}}
+<h1>{{.T "users.title"}}</h1>
+<p class="muted small">{{.T "users.description"}}</p>
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+<div class="stack">
+{{range .Users}}
+<div class="identity">
+  <div><strong>{{.DisplayName}}</strong><div class="muted small">{{.Email}}</div>
+  <div class="muted small">{{if .IsAdmin}}{{$.T "users.administrator"}}{{else}}{{$.T "users.personal_network"}}{{end}}{{if .Disabled}} · {{$.T "users.disabled"}}{{end}}</div></div>
+  {{if ne .ID $.User.ID}}<a class="button danger" href="/idp/users/{{.ID}}/delete">{{$.T "users.delete"}}</a>{{end}}
+</div>
+{{end}}
+</div>
+<div class="section"><a class="button" href="/idp/account">{{.T "users.back"}}</a></div>
+{{template "footer" .}}{{end}}
+
+{{define "delete-user"}}{{template "header" .}}
+<h1>{{.T "users.delete"}}</h1>
+<p><strong>{{.ManagedUser.DisplayName}}</strong> · {{.ManagedUser.Email}}</p>
+<p class="error">{{.T "users.delete_warning"}}</p>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/idp/users/{{.ManagedUser.ID}}/delete">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <label for="confirm_email">{{.T "users.confirm_email"}}</label>
+  <input id="confirm_email" name="confirm_email" type="email" autocomplete="off" required>
+  <div class="section"><button class="danger" type="submit">{{.T "users.delete"}}</button></div>
+</form>
+<div class="section"><a class="button" href="/idp/users">{{.T "users.cancel"}}</a></div>
+{{template "footer" .}}{{end}}

@@ -170,7 +170,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := s.store.UserByID(r.Context(), code.UserID)
-	if err != nil {
+	if err != nil || user.Disabled {
 		oauthJSONError(w, http.StatusBadRequest, "invalid_grant", "account no longer exists")
 		return
 	}

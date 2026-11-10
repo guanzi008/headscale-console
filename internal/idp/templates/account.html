@@ -12,6 +12,13 @@
 </div>
 
 <div class="section">
+  <h2>{{.T "account.network_title"}}</h2>
+  <p class="muted small">{{.T "account.network_description"}}</p>
+  <a class="button" href="{{.AdminPath}}/">{{.T "account.enter_headplane"}}</a>
+  {{if .User.IsAdmin}}<a class="button" style="margin-top:10px" href="/idp/users">{{.T "users.title"}}</a>{{end}}
+</div>
+
+<div class="section">
   <h2>{{.T "account.third_party"}}</h2>
   {{if .Providers}}
   <div class="stack">
@@ -55,8 +62,5 @@
     <div style="height:14px"></div>
     <button type="submit">{{.T "account.update_password"}}</button>
   </form>
-</div>
-<div class="section">
-  <a class="button" href="{{.AdminPath}}/">{{.T "account.enter_headplane"}}</a>
 </div>
 {{template "footer" .}}{{end}}

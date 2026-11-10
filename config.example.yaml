@@ -19,6 +19,7 @@ registration:
   password_min_length: 12
 
 headplane:
+  # Legacy compatibility option; each account owns its private network.
   default_role: member
 
 headscale:

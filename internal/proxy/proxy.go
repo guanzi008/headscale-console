@@ -24,6 +24,10 @@ func New(adminPath string, idpURL, headplaneURL, headscaleURL *url.URL, logger *
 	}
 }
 
+func (r *Router) GuardHeadplane(guard func(http.Handler) http.Handler) {
+	r.headplane = guard(r.headplane)
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	switch {
 	case pathWithin(request.URL.Path, "/idp"):

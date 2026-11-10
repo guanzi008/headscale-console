@@ -39,6 +39,7 @@ type Options struct {
 	Registration  config.RegistrationConfig
 	Providers     []config.OAuthProviderConfig
 	Logger        *slog.Logger
+	DeleteNetwork func(context.Context, string) error
 }
 
 type Server struct {
@@ -67,6 +68,8 @@ type pageData struct {
 	RegistrationEnabled bool
 	AdminPath           string
 	User                *User
+	Users               []User
+	ManagedUser         *User
 	Identities          map[string]Identity
 	Providers           []providerView
 	Locale              string
@@ -177,6 +180,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /idp/account/password", s.handlePasswordChange)
 	mux.HandleFunc("POST /idp/account/link", s.handleStartLink)
 	mux.HandleFunc("POST /idp/account/unlink", s.handleUnlink)
+	mux.HandleFunc("GET /idp/users", s.handleUsers)
+	mux.HandleFunc("GET /idp/users/{id}/delete", s.handleDeleteUserPage)
+	mux.HandleFunc("POST /idp/users/{id}/delete", s.handleDeleteUser)
 	mux.HandleFunc("GET /idp/login/{provider}", s.handleStartExternalLogin)
 	mux.HandleFunc("GET /idp/oauth/{provider}/callback", s.handleExternalCallback)
 	return mux
@@ -222,7 +228,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	returnTo := s.safeReturnTo(r.URL.Query().Get("return_to"))
-	if _, ok := s.currentUser(r); ok {
+	if user, ok := s.currentUser(r); ok {
+		// Refresh legacy /idp-scoped sessions into the account-wide cookie used
+		// by the private-network proxy, without sending users around a loop.
+		if err := s.createSession(w, r, user.ID); err != nil {
+			http.Error(w, "could not refresh session", http.StatusInternalServerError)
+			return
+		}
 		if returnTo != "" {
 			http.Redirect(w, r, returnTo, http.StatusSeeOther)
 		} else {
@@ -258,7 +270,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	returnTo := s.safeReturnTo(r.FormValue("return_to"))
 
 	user, err := s.store.UserByEmail(r.Context(), email)
-	if err != nil || !VerifyPassword(password, user.PasswordHash) {
+	if err != nil || user.Disabled || !VerifyPassword(password, user.PasswordHash) {
 		s.render(w, r, "login", pageData{
 			TitleKey:            "login.title",
 			ErrorKey:            "err.invalid_credentials",
@@ -510,10 +522,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID st
 	if err := s.store.CreateSession(r.Context(), hashToken(token), userID, time.Now().Add(sessionLifetime)); err != nil {
 		return err
 	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/idp", MaxAge: -1, HttpOnly: true, Secure: s.opts.SecureCookies, SameSite: http.SameSiteLaxMode})
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
-		Path:     "/idp",
+		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.opts.SecureCookies,
 		SameSite: http.SameSiteLaxMode,
@@ -574,10 +587,15 @@ func (s *Server) verifySignedValue(value string) (string, bool) {
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, name string) {
+	cookiePath := "/idp"
+	if name == sessionCookie {
+		cookiePath = "/"
+		http.SetCookie(w, &http.Cookie{Name: name, Path: "/idp", MaxAge: -1, HttpOnly: true, Secure: s.opts.SecureCookies, SameSite: http.SameSiteLaxMode})
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
-		Path:     "/idp",
+		Path:     cookiePath,
 		HttpOnly: true,
 		Secure:   s.opts.SecureCookies,
 		SameSite: http.SameSiteLaxMode,
@@ -652,8 +670,11 @@ func (s *Server) languageReturnTo(r *http.Request, data pageData) string {
 			query.Set("return_to", data.ReturnTo)
 			return path + "?" + query.Encode()
 		}
-	case "/idp/account":
+	case "/idp/account", "/idp/users":
 	default:
+		if strings.HasPrefix(path, "/idp/users/") {
+			return path
+		}
 		return "/idp/login"
 	}
 	if r.Method == http.MethodGet && r.URL.RawQuery != "" {

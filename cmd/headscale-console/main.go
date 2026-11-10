@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +41,11 @@ type application struct {
 	publicHTTP    *httpService
 	headscaleProc *supervisor.Manager
 	headplaneProc *supervisor.Manager
+	rootAPIKey    atomic.Value
+	clientSecret  string
+	cookieSecret  string
+	proxySecret   string
+	networks      sync.Map
 }
 
 func main() {
@@ -138,6 +145,11 @@ func (a *application) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.clientSecret, a.cookieSecret = clientSecret, cookieSecret
+	a.proxySecret, err = secret.LoadOrCreateToken(filepath.Join(secretsDir, "headplane-proxy-secret"), 48)
+	if err != nil {
+		return err
+	}
 
 	identityProvider, err := idp.New(idp.Options{
 		DataDir:       filepath.Join(a.dataDir, "account"),
@@ -150,6 +162,7 @@ func (a *application) Run(ctx context.Context) error {
 		Registration:  a.cfg.Registration,
 		Providers:     a.cfg.OAuthProviders,
 		Logger:        a.logger,
+		DeleteNetwork: a.deletePersonalNetwork,
 	})
 	if err != nil {
 		return fmt.Errorf("start account center: %w", err)
@@ -169,6 +182,7 @@ func (a *application) Run(ctx context.Context) error {
 	headplaneURL, _ := url.Parse(a.cfg.HeadplaneURL())
 	headscaleURL, _ := url.Parse(a.cfg.HeadscaleURL())
 	router := proxy.New(a.cfg.Server.AdminPath, idpURL, headplaneURL, headscaleURL, a.logger)
+	router.GuardHeadplane(a.guardPersonalHeadplane)
 	a.publicHTTP, err = startHTTP("public proxy", a.cfg.Server.Listen, router, a.cfg.Server.TLSCertFile, a.cfg.Server.TLSKeyFile, a.logger)
 	if err != nil {
 		return err
@@ -193,10 +207,14 @@ func (a *application) Run(ctx context.Context) error {
 	}
 
 	a.headscaleProc = supervisor.New(supervisor.Spec{
-		Name:   "headscale",
-		Path:   a.bundle.HeadscaleBinary,
-		Args:   []string{"serve", "--config", headscaleFiles.Path},
-		Dir:    filepath.Join(a.dataDir, "headscale"),
+		Name: "headscale",
+		Path: a.bundle.HeadscaleBinary,
+		Args: []string{"serve", "--config", headscaleFiles.Path},
+		Dir:  filepath.Join(a.dataDir, "headscale"),
+		Env: []string{
+			"HEADSCALE_CONSOLE_TAILNETS_DIR=" + filepath.Join(a.dataDir, "tailnets"),
+			"HEADSCALE_CONSOLE_CONFIG_TEMPLATE=" + headscaleFiles.Path,
+		},
 		Logger: a.logger,
 	})
 	if err := a.headscaleProc.Start(ctx); err != nil {
@@ -219,6 +237,7 @@ func (a *application) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	a.rootAPIKey.Store(apiKey)
 	if err := headscale.EnsureDefaultPolicy(ctx, a.cfg.HeadscaleURL(), apiKey, a.logger); err != nil {
 		return err
 	}
@@ -252,6 +271,8 @@ func (a *application) Run(ctx context.Context) error {
 			"HEADPLANE_CONFIG_PATH=" + headplaneConfigPath,
 			"HOME=" + a.dataDir,
 			"NODE_ENV=production",
+			"HSC_CONSOLE_TAILNETS_DIR=" + filepath.Join(a.dataDir, "tailnets"),
+			"HSC_CONSOLE_PROXY_SECRET=" + a.proxySecret,
 		},
 		Logger: a.logger,
 	})

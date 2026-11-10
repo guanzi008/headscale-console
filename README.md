@@ -9,9 +9,18 @@
 - 账号中心和 Headplane 支持中文 / English 切换，语言选择由共享 Cookie 保存。
 - 第三方账号不能凭相同邮箱自动合并；必须先登录本地账号再主动绑定，避免账号接管。
 - Headplane 和 Headscale 共用内置 OIDC 服务，不需要另外部署 Keycloak、Authelia 等身份提供方。
+- 共用一个登录和控制域名，每个注册账号拥有独立私有网络，并成为该网络的 owner。设备、ACL、DNS、地址池、密钥和管理后台数据分别存储。
+- 首个注册账号是平台管理员，可在头像菜单或账号中心的“注册账号管理”中删除账号及其私有网络。
 - Headplane 和 Headscale 作为受监管子进程运行，异常退出后自动重启，主进程退出时优雅关闭。
-- 首次启动自动创建 Headscale API Key，并初始化显式 allow-all ACL，避免 Headplane 的 ACL 页面因 Headscale 0.30 的空策略返回 500。
+- 每个私有网络自动创建独立 API Key 和显式 allow-all ACL；修改网络配置只重载该网络。
 - 数据、密钥、子进程配置默认都保存在一个数据目录下，便于备份和迁移。
+
+### v0.2.0 私有网络
+
+- 新注册账号直接管理自己的空网络；相同邮箱域名不会让账号自动加入同一个网络。
+- 单个 Headscale 子进程管理独立网络状态，单个 Headplane 子进程按登录账号选择独立配置和数据库。客户端仍使用同一个 `--login-server` 地址。
+- 删除注册账号先撤销登录与授权，再关闭其网络并清理数据库、策略、设备和密钥；清理失败时账号保持禁用，可重试删除。
+- 账号中心、设备授权确认和主要管理页面、弹窗支持中文及 English。
 
 ### v0.1.4 地址池修复
 
@@ -34,6 +43,9 @@ Browser
 │  /admin/*  → Headplane (embedded Node.js)  │
 │  /*        → Headscale (embedded binary)   │
 └────────────────────────────────────────────┘
+      │ 当前登录账号 / 客户端设备与密钥
+      ├── 账号 A → 独立 Headscale 状态 + Headplane 数据库
+      └── 账号 B → 独立 Headscale 状态 + Headplane 数据库
 ```
 
 同一个二进制内包含：
@@ -90,7 +102,7 @@ OUTPUT=dist/headscale-console \
 生成发布文件（要求工作区干净，并会重新构建 Headplane）：
 
 ```bash
-./scripts/release.sh 0.1.4
+./scripts/release.sh 0.2.0
 ```
 
 ## 发布包与安装
@@ -157,9 +169,6 @@ registration:
     - example.com
   password_min_length: 12
 
-headplane:
-  default_role: member
-
 headscale:
   base_domain: tailnet.internal
   derp_urls:
@@ -183,7 +192,7 @@ headscale:
 
 语言选择优先级为：请求中的 `?lang=`、`hsc_locale` Cookie、浏览器 `Accept-Language`、英文回退。页面由服务端按当前语言渲染，首屏不会出现先英文后中文的闪烁；`<html lang>` 也会同步更新。
 
-当前账号中心、Headplane 登录/退出、公共导航、设备、用户、DNS、设置入口和访问控制主页面已支持中英文。少数高级编辑对话框和底层 API 错误详情仍可能显示英文。
+当前账号中心、Headplane 登录/退出、公共导航、设备、用户、DNS、设置和访问控制页面支持中英文，常用管理弹窗、角色说明、表单按钮、DNS 与 ACL 编辑器也随语言切换。部分底层 API 原始错误详情仍可能显示英文。
 
 也可以使用环境变量：
 
@@ -282,24 +291,21 @@ oauth_providers:
 3. 绑定后可以直接使用第三方账号登录。
 4. 解绑后，该第三方身份立即不能登录。
 
-### Headplane 多用户角色
+### 私有网络和平台管理员
 
-每个本地账号使用自己的稳定用户 ID 作为 OIDC `sub`，因此 Headplane 会为不同账号创建独立用户。Headplane 自身的行为是：
+每个本地账号使用稳定用户 ID 作为 OIDC `sub`，拥有自己的私有网络。注册账号打开 Headplane 后成为自己网络的 owner，可以管理设备、ACL、DNS、授权密钥和地址池。其他账号的网络不会出现在这个后台；相同邮箱域名也不会自动合并。`headplane.default_role` 保留配置兼容性，个人网络的 owner 不受它影响。
 
-- 第一个成功登录 Headplane 的账号自动成为 owner。
-- 后续账号首次创建时使用 `headplane.default_role`，默认是 `member`。member 能看到连接设备首页，但不能进入管理页面。
-- owner、admin 或 IT admin 可以在 Headplane 的 Users 页面为成员分配 `viewer`、`auditor`、`admin` 等角色。
+首个注册账号同时是平台管理员。平台管理员头像菜单和账号中心提供“注册账号管理”入口（`/idp/users`），可以查看注册账号并删除其他账号。删除前必须输入目标邮箱确认，当前管理员不能删除自己。普通网络 owner 无权进入平台注册账号管理。
 
-如果希望所有新账号默认只读，可设置：
+删除注册账号会撤销其登录会话、第三方身份绑定和 OIDC 授权，并清理其私有网络、设备、策略、密钥及 Headplane 会话。清理失败的账号保持禁用，管理员可以重试；其他账号的网络继续运行。平台进程的日志级别、监听地址等设置由部署配置管理。
 
-```yaml
-headplane:
-  default_role: viewer
-```
+### 从 v0.1.x 升级
 
-可选值：`admin`、`network_admin`、`it_admin`、`auditor`、`viewer`、`member`。`owner` 不能作为默认角色。
+升级前停止服务并整体备份数据目录。旧版账号和密码继续可用，按注册时间最早的现存账号成为平台管理员。
 
-**首次登录决定 owner。** 公网开放注册时，应先由管理员注册并登录 Headplane，再开放给其他用户，或者在生产环境关闭注册。
+v0.1.x 使用共享网络。升级后，各账号打开的是自己的新私有网络。旧共享 Headscale 数据库、策略和设备记录保留在原目录，程序不会自动拆分或移动旧设备。将设备重新授权到所属账号的私有网络，并重新检查 ACL、DNS、地址池和授权密钥后再恢复业务。删除一个旧账号也会撤销它在旧共享网络中创建的设备。
+
+此版本提供每账号一个私有网络；邀请成员加入其他网络、网络切换和跨网络共享设备尚未提供。
 
 ### 内置 OIDC 回调
 
@@ -360,7 +366,9 @@ make docker-test
 - 验证注册、密码登录、第三方未绑定拦截、绑定、OAuth 登录和解绑。
 - 验证中英文页面、语言 Cookie 持久化，以及 Headplane 导航的语言切换。
 - 走完 Headplane OIDC 登录，确认最终到达 `/admin/machines`。
-- 注册第二个账号并登录 Headplane，确认多用户登录到 member 首页。
+- 注册第二个账号并登录其独立网络，使用三个真实 Tailscale 客户端验证设备和 DNS 隔离。
+- 验证浏览器设备授权、伪造网络请求头被覆盖、策略隔离、整机重启恢复，以及单个网络重载。
+- 验证管理员删除注册账号后旧会话和密钥失效、数据清理，其他网络保持完整。
 
 脚本使用 `127.0.0.1` 和以下端口：`18070`、`18071`、`18080`、`18081`、`18082`、`18083`、`18090`。可通过同名环境变量覆盖端口；Linux 宿主机网络是必需条件。设置 `KEEP_SMOKE_DATA=1` 可保留临时数据。
 
@@ -397,8 +405,14 @@ data/
 ├── secrets/                  # OIDC client secret、Cookie 密钥、Headscale API Key
 ├── account/accounts.sqlite   # 本地账号、会话、第三方身份绑定
 ├── generated/                # 自动生成的 Headplane / Headscale 配置
-├── headplane/data/           # Headplane 数据
-├── headscale/                # Headscale SQLite、Noise key、socket、DNS records
+├── headplane/data/           # 平台兼容配置及旧版 Headplane 数据
+├── headscale/                # 平台 Noise key、旧版共享 Headscale 数据
+├── tailnets/
+│   └── usr_<id>/
+│       ├── owner.json        # 网络所属账号；删除后仅保留墓碑以阻止恢复
+│       ├── generated/        # 该网络 Headplane / Headscale 配置
+│       ├── headscale/        # 该网络 SQLite、API Key、DNS records
+│       └── headplane/data/   # 该网络管理后台用户和会话
 └── runtime/                  # 从二进制解包的 Node/Headplane/Headscale 运行时
 ```
 
@@ -427,7 +441,7 @@ go vet ./...
 - 没有邮箱验证、找回密码、MFA、登录限流、失败锁定和审计日志。
 - 本地账号的 `email_verified` 在 OIDC Token 中始终为 `true`，这是“账号中心已接受该邮箱”的声明，不代表已经发送验证邮件。
 - 注册默认开启。公网部署至少应关闭注册、限制邮箱域名，或在前置代理增加访问控制。
-- 第一个登录 Headplane 的账号会成为 owner。开放注册前必须由可信管理员先完成首次登录。
+- 第一个注册账号成为平台管理员。开放注册前先完成管理员注册；后续账号只能管理各自的私有网络。
 - 邮箱域名限制不能防止冒用域名邮箱，不能替代邮箱验证。
 - 第三方账号绑定不会按邮箱自动合并，但仍建议启用提供方的邮箱验证能力。
 - SQLite 和本地文件存储只适合单实例部署，不支持多副本共享同一数据目录。
