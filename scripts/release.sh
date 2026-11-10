@@ -36,9 +36,14 @@ echo "==> Building xuanyu"
 (
 	cd "$XUANYU_SOURCE"
 	go test ./...
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' \
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.toolVersion=$VERSION" \
 		-o "$RELEASE_DIR/xuanyu-linux-amd64" .
 )
+XUANYU_VERSION="$("$RELEASE_DIR/xuanyu-linux-amd64" version)"
+[[ "$XUANYU_VERSION" == "xuanyu $VERSION" ]] || {
+	echo "error: unexpected xuanyu version: $XUANYU_VERSION" >&2
+	exit 1
+}
 
 echo "==> Packing release assets"
 install -m 0755 "$RELEASE_DIR/headscale-console-linux-amd64" "$PACKAGE_DIR/headscale-console"
