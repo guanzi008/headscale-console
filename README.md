@@ -13,6 +13,14 @@
 - 首次启动自动创建 Headscale API Key，并初始化显式 allow-all ACL，避免 Headplane 的 ACL 页面因 Headscale 0.30 的空策略返回 500。
 - 数据、密钥、子进程配置默认都保存在一个数据目录下，便于备份和迁移。
 
+### v0.1.4 地址池修复
+
+- IPv6 地址分配按区间跳过保留池，避免大网段阻塞后续设备注册。
+- 删除地址池用户、给已有设备加标签后，策略刷新和服务重启仍能正常完成。
+- 清空地址池只影响后续分配，已有设备保留 IP、ACL 通信、精确主机路由和反向 DNS。
+- 新增或修改地址池仍检查已有节点地址，包括给尚未创建的用户预留网段的情况。
+- 地址池集成测试使用定制 Headscale 源码；普通兼容测试继续覆盖上游版本。
+
 ## 架构
 
 ```text
@@ -39,7 +47,7 @@ Browser
 
 ### 依赖
 
-- Go 1.26.4 或更高版本。
+- Go 1.27.3 或更高版本，与同级 Headscale 源码的要求一致。
 - Docker，用于从 `node:24-slim` 提取 Node 运行时；使用 `--rebuild-headplane` 时也用于构建前端。
 - 同级目录中的 Headplane 和 Headscale 源码：
 
@@ -82,7 +90,7 @@ OUTPUT=dist/headscale-console \
 生成发布文件（要求工作区干净，并会重新构建 Headplane）：
 
 ```bash
-./scripts/release.sh 0.1.3
+./scripts/release.sh 0.1.4
 ```
 
 ## 发布包与安装
