@@ -439,6 +439,7 @@ jq -e '.nodes | length == 1' "$WORK_DIR/bob-restored.json" >/dev/null || fail "r
 jq -S '[.nodes[] | {id, nodeKey, user: .user.id}] | sort_by(.id)' "$WORK_DIR/alice-nodes.json" > "$WORK_DIR/alice-identities-before.json"
 jq -S '[.nodes[] | {id, nodeKey, user: .user.id}] | sort_by(.id)' "$WORK_DIR/alice-restored.json" > "$WORK_DIR/alice-identities-after.json"
 cmp "$WORK_DIR/alice-identities-before.json" "$WORK_DIR/alice-identities-after.json" || fail "restart changed public node or user identities"
+wait_for_url "$BASE_URL/admin/healthz" || fail "Headplane did not become ready after restart"
 curl -fsS -L -c "$SECOND_JAR" -b "$SECOND_JAR" -o "$WORK_DIR/bob-console-restored.html" "$BASE_URL/admin/machines"
 assert_contains "$WORK_DIR/bob-console-restored.html" "bob-private-one"
 
